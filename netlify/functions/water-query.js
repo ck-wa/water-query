@@ -124,7 +124,7 @@ exports.handler = async (event) => {
 7. 不得假稱已查詢政府即時資料或實驗室數據。`;
 
     const result = await generateWithRetry(ai, {
-      model: "gemini-3.8-flash",
+      model: "gemini-3.5-flash-lite",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
