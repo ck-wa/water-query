@@ -1,0 +1,12 @@
+[build]
+  publish = "."
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+[[redirects]]
+  from = "/api/water-query"
+  to = "/.netlify/functions/water-query"
+  status = 200
+  force = true

@@ -1,0 +1,13 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // 產品圖片公開讀取；僅登入公司帳號可上傳、更新或刪除。
+    match /products/{allPaths=**} {
+      allow read: if true;
+      allow create, update: if request.auth != null
+                            && request.resource.size < 5 * 1024 * 1024
+                            && request.resource.contentType.matches('image/(jpeg|png|webp)');
+      allow delete: if request.auth != null;
+    }
+  }
+}
