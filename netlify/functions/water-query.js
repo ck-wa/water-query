@@ -78,7 +78,6 @@ async function generateWithRetry(ai, request, maxRetries = 2) {
 // CSV 解析
 function parseCSV(text) {
   const firstLine = text.split(/\r?\n/)[0] || "";
-
   const delimiters = [",", "\t", ";"];
 
   const delimiter = delimiters.reduce(
@@ -190,18 +189,26 @@ async function getOfficialHardness(location) {
       );
     }
 
-const cityMatch = location.match(/[\u4e00-\u9fff]{2,3}[縣市]/);
-const city = cityMatch ? cityMatch[0] : "";
+    // 先取得縣市，再從縣市後方擷取行政區
+    const cityMatch = location.match(
+      /[\u4e00-\u9fff]{2,3}[縣市]/
+    );
 
-const afterCity = cityMatch
-  ? location.slice(location.indexOf(city) + city.length)
-  : location;
+    const city = cityMatch ? cityMatch[0] : "";
 
-const districtMatch = afterCity.match(
-  /[\u4e00-\u9fff]{1,3}(?:區|鄉|鎮|市)/
-);
+    const afterCity = cityMatch
+      ? location.slice(
+          location.indexOf(city) + city.length
+        )
+      : location;
 
-const district = districtMatch ? districtMatch[0] : "";
+    const districtMatch = afterCity.match(
+      /[\u4e00-\u9fff]{1,3}(?:區|鄉|鎮|市)/
+    );
+
+    const district = districtMatch
+      ? districtMatch[0]
+      : "";
 
     if (!cityMatch || !districtMatch) {
       return {
@@ -211,10 +218,11 @@ const district = districtMatch ? districtMatch[0] : "";
       };
     }
 
-    const city = cityMatch[0];
-    const district = districtMatch[0];
-
-    console.log("官方資料比對地區：", city, district);
+    console.log(
+      "官方資料比對地區：",
+      city,
+      district
+    );
 
     const matchedRows = rows.slice(1).filter(row =>
       row[itemIndex] === "總硬度" &&
@@ -224,7 +232,9 @@ const district = districtMatch ? districtMatch[0] : "";
     );
 
     if (matchedRows.length === 0) {
-      console.log("官方 CSV 找不到該行政區硬度資料");
+      console.log(
+        "官方 CSV 找不到該行政區硬度資料"
+      );
 
       return {
         value: "目前查無官方總硬度資料",
@@ -249,7 +259,10 @@ const district = districtMatch ? districtMatch[0] : "";
       .map(item => `${item.value} ${item.unit}`)
       .join("、");
 
-    console.log("官方硬度查詢成功：", result);
+    console.log(
+      "官方硬度查詢成功：",
+      result
+    );
 
     return {
       value: result,
@@ -258,7 +271,10 @@ const district = districtMatch ? districtMatch[0] : "";
     };
 
   } catch (error) {
-    console.error("官方 CSV 查詢錯誤：", error.message);
+    console.error(
+      "官方 CSV 查詢錯誤：",
+      error.message
+    );
 
     return {
       value: "官方水質資料暫時無法取得",
@@ -273,7 +289,9 @@ async function getAIExplanation(location, hardness) {
   const apiKey = process.env.GEMINI_API_KEY;
 
   if (!apiKey) {
-    console.warn("未設定 GEMINI_API_KEY，使用基本說明");
+    console.warn(
+      "未設定 GEMINI_API_KEY，使用基本說明"
+    );
 
     return null;
   }
@@ -320,7 +338,11 @@ ${hardness}
     return JSON.parse(result.text || "{}");
 
   } catch (error) {
-    console.error("Gemini 查詢錯誤：", error.message);
+    console.error(
+      "Gemini 查詢錯誤：",
+      error.message
+    );
+
     return null;
   }
 }
@@ -359,7 +381,9 @@ exports.handler = async event => {
     };
   }
 
-  const location = String(body.location || "").trim();
+  const location = String(
+    body.location || ""
+  ).trim();
 
   if (!location || location.length > 120) {
     return {
@@ -372,13 +396,19 @@ exports.handler = async event => {
   }
 
   try {
-    console.log("開始查詢地址：", location);
+    console.log(
+      "開始查詢地址：",
+      location
+    );
 
     // 先查官方資料，不依賴 Gemini
     const officialHardness =
       await getOfficialHardness(location);
 
-    console.log("官方硬度結果：", officialHardness);
+    console.log(
+      "官方硬度結果：",
+      officialHardness
+    );
 
     // Gemini 只負責補充說明
     const aiData = await getAIExplanation(
@@ -388,23 +418,43 @@ exports.handler = async event => {
 
     const data = {
       location,
-      reservoir: aiData?.reservoir ||
+
+      reservoir:
+        aiData?.reservoir ||
         "尚待官方供水資料確認",
-      plant: aiData?.plant ||
+
+      plant:
+        aiData?.plant ||
         "尚待官方供水資料確認",
-      hardness_value: officialHardness.value,
-      hardness_level: officialHardness.found
-        ? "官方檢驗數值，請依檢驗資料判讀"
-        : "目前沒有可用的官方檢驗數值",
-      tds_value: "目前沒有可用的官方 TDS 資料",
-      description: aiData?.description ||
+
+      hardness_value:
+        officialHardness.value,
+
+      hardness_level:
+        officialHardness.found
+          ? "官方檢驗數值，請依檢驗資料判讀"
+          : "目前沒有可用的官方檢驗數值",
+
+      tds_value:
+        "目前沒有可用的官方 TDS 資料",
+
+      description:
+        aiData?.description ||
         "本次查詢依官方公開資料比對。實際供水情形可能因管網及調度而異。",
-      advice: aiData?.advice ||
+
+      advice:
+        aiData?.advice ||
         "如需確認飲用水品質，可參考所在地供水單位公布的水質檢驗資料。",
-      filter: aiData?.filter ||
+
+      filter:
+        aiData?.filter ||
         "建議先確認實際水質檢測結果，再依濾材認證及用途選擇產品。",
-      hardness_source: officialHardness.source,
-      hardness_found: officialHardness.found
+
+      hardness_source:
+        officialHardness.source,
+
+      hardness_found:
+        officialHardness.found
     };
 
     return {
@@ -414,7 +464,10 @@ exports.handler = async event => {
     };
 
   } catch (error) {
-    console.error("Water query error:", error);
+    console.error(
+      "Water query error:",
+      error
+    );
 
     return {
       statusCode: 500,
