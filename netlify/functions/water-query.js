@@ -60,24 +60,27 @@ async function generateWithRetry(ai, request, maxRetries = 2) {
   for (let attempt = 0; ; attempt++) {
     try {
       return await ai.models.generateContent(request);
-    } catch (error) {
-      if (
-        attempt >= maxRetries ||
-        !isTemporaryGeminiError(error)
-      ) {
-        throw error;
-      }
+} catch (error) {
+    console.error("Water query error:", error);
 
-      const delayMs = 800 * (2 ** attempt);
+    const temporary = isTemporaryGeminiError(error);
 
-      console.warn(
-        `Gemini 暫時性錯誤，${delayMs}ms 後重試。`
-      );
-
-      await sleep(delayMs);
-    }
+    return {
+      statusCode: temporary ? 503 : 502,
+      headers,
+      body: JSON.stringify({
+        error: temporary
+          ? "Gemini 服務暫時忙碌，請稍後再試。"
+          : "後端查詢發生錯誤。",
+        diagnostic: String(
+          error && error.message
+            ? error.message
+            : error
+        ).slice(0, 300)
+      })
+    };
   }
-}
+};
 
 // CSV 解析，支援逗號、引號及換行
 function parseCSV(text) {
