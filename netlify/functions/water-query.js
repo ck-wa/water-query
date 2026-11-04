@@ -190,13 +190,18 @@ async function getOfficialHardness(location) {
       );
     }
 
-    const cityMatch = location.match(
-      /[\u4e00-\u9fff]{2,3}[縣市]/
-    );
+const cityMatch = location.match(/[\u4e00-\u9fff]{2,3}[縣市]/);
+const city = cityMatch ? cityMatch[0] : "";
 
-    const districtMatch = location.match(
-      /[\u4e00-\u9fff]{1,3}(?:區|鄉|鎮|市)/
-    );
+const afterCity = cityMatch
+  ? location.slice(location.indexOf(city) + city.length)
+  : location;
+
+const districtMatch = afterCity.match(
+  /[\u4e00-\u9fff]{1,3}(?:區|鄉|鎮|市)/
+);
+
+const district = districtMatch ? districtMatch[0] : "";
 
     if (!cityMatch || !districtMatch) {
       return {
