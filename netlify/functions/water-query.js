@@ -1,11 +1,11 @@
 
 const { GoogleGenAI } = require("@google/genai");
 
-// 台灣自來水公司官方水質資料
 const OFFICIAL_CSV_URL =
   "https://www.water.gov.tw/opendata/qual5.csv";
 
-// Gemini 回傳資料格式
+const MODEL_NAME = "gemini-3.5-flash-lite";
+
 const responseSchema = {
   type: "OBJECT",
   properties: {
@@ -32,23 +32,19 @@ const responseSchema = {
   ]
 };
 
-// 暫時性錯誤自動重試
-const sleep = (ms) =>
+// 暫時性錯誤重試
+const sleep = ms =>
   new Promise(resolve => setTimeout(resolve, ms));
 
 function isTemporaryGeminiError(error) {
   const status = Number(
-    error &&
-    (
-      error.status ||
-      error.code ||
-      (error.error && error.error.code)
-    )
+    error?.status ||
+    error?.code ||
+    error?.error?.code
   );
 
-  const message = String(
-    error && error.message || ""
-  ).toLowerCase();
+  const message = String(error?.message || "")
+    .toLowerCase();
 
   return [429, 500, 502, 503, 504].includes(status) ||
     message.includes("high demand") ||
@@ -60,29 +56,26 @@ async function generateWithRetry(ai, request, maxRetries = 2) {
   for (let attempt = 0; ; attempt++) {
     try {
       return await ai.models.generateContent(request);
-} catch (error) {
-    console.error("Water query error:", error);
+    } catch (error) {
+      if (
+        attempt >= maxRetries ||
+        !isTemporaryGeminiError(error)
+      ) {
+        throw error;
+      }
 
-    const temporary = isTemporaryGeminiError(error);
+      const delay = 800 * (2 ** attempt);
 
-    return {
-      statusCode: temporary ? 503 : 502,
-      headers,
-      body: JSON.stringify({
-        error: temporary
-          ? "Gemini 服務暫時忙碌，請稍後再試。"
-          : "後端查詢發生錯誤。",
-        diagnostic: String(
-          error && error.message
-            ? error.message
-            : error
-        ).slice(0, 300)
-      })
-    };
+      console.warn(
+        `Gemini 暫時錯誤，${delay}ms 後重試`
+      );
+
+      await sleep(delay);
+    }
   }
-};
+}
 
-// CSV 解析，支援逗號、引號及換行
+// CSV 解析
 function parseCSV(text) {
   const firstLine = text.split(/\r?\n/)[0] || "";
 
@@ -145,19 +138,21 @@ function parseCSV(text) {
   return rows;
 }
 
-// 取得官方總硬度資料
+// 官方硬度查詢
 async function getOfficialHardness(location) {
   try {
+    console.log("開始讀取官方 CSV");
+
     const response = await fetch(OFFICIAL_CSV_URL, {
       headers: {
-        "Accept": "text/csv"
+        Accept: "text/csv"
       },
       signal: AbortSignal.timeout(15000)
     });
 
     if (!response.ok) {
       throw new Error(
-        `官方 CSV 讀取失敗：HTTP ${response.status}`
+        `CSV HTTP 狀態：${response.status}`
       );
     }
 
@@ -167,7 +162,7 @@ async function getOfficialHardness(location) {
     const rows = parseCSV(csv);
 
     if (rows.length < 2) {
-      throw new Error("官方 CSV 沒有有效資料");
+      throw new Error("CSV 沒有有效資料");
     }
 
     const headers = rows[0].map(value =>
@@ -187,12 +182,14 @@ async function getOfficialHardness(location) {
         districtIndex,
         valueIndex,
         unitIndex
-      ].some(index => index === -1)
+      ].some(index => index < 0)
     ) {
-      throw new Error("官方 CSV 欄位格式不符合預期");
+      throw new Error(
+        "CSV 欄位名稱與預期不同：" +
+        headers.join(",")
+      );
     }
 
-    // 從地址擷取縣市及行政區
     const cityMatch = location.match(
       /[\u4e00-\u9fff]{2,3}[縣市]/
     );
@@ -204,13 +201,15 @@ async function getOfficialHardness(location) {
     if (!cityMatch || !districtMatch) {
       return {
         value: "請輸入完整縣市及行政區",
-        source: "台灣自來水公司官方水質資料",
+        source: "台灣自來水公司官方資料",
         found: false
       };
     }
 
     const city = cityMatch[0];
     const district = districtMatch[0];
+
+    console.log("官方資料比對地區：", city, district);
 
     const matchedRows = rows.slice(1).filter(row =>
       row[itemIndex] === "總硬度" &&
@@ -220,14 +219,15 @@ async function getOfficialHardness(location) {
     );
 
     if (matchedRows.length === 0) {
+      console.log("官方 CSV 找不到該行政區硬度資料");
+
       return {
         value: "目前查無官方總硬度資料",
-        source: "台灣自來水公司官方水質資料",
+        source: "台灣自來水公司官方資料",
         found: false
       };
     }
 
-    // 去除重複數值
     const uniqueResults = [
       ...new Map(
         matchedRows.map(row => [
@@ -240,27 +240,88 @@ async function getOfficialHardness(location) {
       ).values()
     ];
 
+    const result = uniqueResults
+      .map(item => `${item.value} ${item.unit}`)
+      .join("、");
+
+    console.log("官方硬度查詢成功：", result);
+
     return {
-      value: uniqueResults
-        .map(item => `${item.value} ${item.unit}`)
-        .join("、"),
-      source: "台灣自來水公司官方水質資料",
+      value: result,
+      source: "台灣自來水公司官方資料",
       found: true
     };
 
   } catch (error) {
-    console.error("官方水質資料讀取錯誤：", error);
+    console.error("官方 CSV 查詢錯誤：", error.message);
 
     return {
       value: "官方水質資料暫時無法取得",
-      source: "台灣自來水公司官方水質資料",
+      source: "台灣自來水公司官方資料",
       found: false
     };
   }
 }
 
-// 主查詢功能
-exports.handler = async (event) => {
+// Gemini 說明文字
+async function getAIExplanation(location, hardness) {
+  const apiKey = process.env.GEMINI_API_KEY;
+
+  if (!apiKey) {
+    console.warn("未設定 GEMINI_API_KEY，使用基本說明");
+
+    return null;
+  }
+
+  try {
+    const ai = new GoogleGenAI({ apiKey });
+
+    const prompt = `
+你是台灣民生用水資訊助理。
+
+使用者查詢地址：${location}
+
+已取得的官方總硬度資料：
+${hardness}
+
+請使用繁體中文提供：
+1. 水庫名稱：無法確認就寫待確認。
+2. 淨水場名稱：無法確認就寫待確認。
+3. 硬度等級說明：不可自行捏造數值。
+4. 居家用水建議。
+5. 濾水器選購建議。
+
+重要規則：
+- 不可猜測水庫或淨水場。
+- 不可編造水質檢驗數字。
+- TDS 與總硬度是不同指標。
+- 不可把總硬度當成 TDS。
+- 不得假稱已查詢政府即時資料。
+- 不得宣稱水垢等於污染。
+- 使用繁體中文。
+`;
+
+    const result = await generateWithRetry(ai, {
+      model: MODEL_NAME,
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema,
+        temperature: 0.2,
+        maxOutputTokens: 900
+      }
+    });
+
+    return JSON.parse(result.text || "{}");
+
+  } catch (error) {
+    console.error("Gemini 查詢錯誤：", error.message);
+    return null;
+  }
+}
+
+// Netlify 主程式
+exports.handler = async event => {
   const headers = {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store"
@@ -279,18 +340,6 @@ exports.handler = async (event) => {
     };
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
-
-  if (!apiKey) {
-    return {
-      statusCode: 500,
-      headers,
-      body: JSON.stringify({
-        error: "Netlify 尚未設定 GEMINI_API_KEY。"
-      })
-    };
-  }
-
   let body;
 
   try {
@@ -305,9 +354,7 @@ exports.handler = async (event) => {
     };
   }
 
-  const location = String(
-    body.location || ""
-  ).trim();
+  const location = String(body.location || "").trim();
 
   if (!location || location.length > 120) {
     return {
@@ -320,84 +367,58 @@ exports.handler = async (event) => {
   }
 
   try {
-    const ai = new GoogleGenAI({ apiKey });
+    console.log("開始查詢地址：", location);
 
-    const prompt = `
-你是台灣民生用水資訊助理。
+    // 先查官方資料，不依賴 Gemini
+    const officialHardness =
+      await getOfficialHardness(location);
 
-使用者查詢地點：${location}
+    console.log("官方硬度結果：", officialHardness);
 
-請以繁體中文回傳指定 JSON 格式。
+    // Gemini 只負責補充說明
+    const aiData = await getAIExplanation(
+      location,
+      officialHardness.value
+    );
 
-重要規則：
-1. 不可捏造水庫、淨水場、硬度或 TDS 數值。
-2. hardness_value 暫時填寫「待取得官方檢驗資料」。
-3. hardness_level 填寫「以官方檢驗數值判斷」。
-4. tds_value 填寫「目前沒有可用的官方 TDS 資料」。
-5. 無法確認水庫或淨水場時，請明確標示需向供水單位確認。
-6. 不得把 TDS 當成硬度。
-7. 不得假稱已查詢政府即時資料。
-8. 說明不同地區可能因供水管網調度而有差異。
-9. 提供一般居家用水建議。
-10. 濾水器建議必須中立，不得保證安全或療效。
-`;
-
-    const result = await generateWithRetry(ai, {
-      model: "gemini-3.5-flash-lite",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema,
-        temperature: 0.2,
-        maxOutputTokens: 900
-      }
-    });
-
-    const raw = result.text || "";
-    const data = JSON.parse(raw);
-
-    // 官方硬度資料優先於 AI 回答
-   console.log("地址查詢：", location);
-   console.log("官方硬度查詢結果：", officialHardness);
-
-    data.hardness_value = officialHardness.value;
-
-    data.hardness_level = officialHardness.found
-      ? "官方檢驗數值，僅代表資料所列的檢驗結果"
-      : "目前沒有可用的官方檢驗數值";
-
-    // TDS 不使用硬度數值代替
-    data.tds_value =
-      "目前沒有可用的官方 TDS 資料";
-
-    data.description +=
-      ` 總硬度資料來源：${officialHardness.source}。` +
-      "TDS 與總硬度是不同的水質指標，不可互相替代。";
+    const data = {
+      location,
+      reservoir: aiData?.reservoir ||
+        "尚待官方供水資料確認",
+      plant: aiData?.plant ||
+        "尚待官方供水資料確認",
+      hardness_value: officialHardness.value,
+      hardness_level: officialHardness.found
+        ? "官方檢驗數值，請依檢驗資料判讀"
+        : "目前沒有可用的官方檢驗數值",
+      tds_value: "目前沒有可用的官方 TDS 資料",
+      description: aiData?.description ||
+        "本次查詢依官方公開資料比對。實際供水情形可能因管網及調度而異。",
+      advice: aiData?.advice ||
+        "如需確認飲用水品質，可參考所在地供水單位公布的水質檢驗資料。",
+      filter: aiData?.filter ||
+        "建議先確認實際水質檢測結果，再依濾材認證及用途選擇產品。",
+      hardness_source: officialHardness.source,
+      hardness_found: officialHardness.found
+    };
 
     return {
       statusCode: 200,
       headers,
-      body: JSON.stringify({
-        ...data,
-        location: data.location || location,
-        hardness_source: officialHardness.source,
-        hardness_found: officialHardness.found
-      })
+      body: JSON.stringify(data)
     };
 
   } catch (error) {
-    console.error("Gemini water query error:", error);
-
-    const temporary =
-      isTemporaryGeminiError(error);
+    console.error("Water query error:", error);
 
     return {
-      statusCode: temporary ? 503 : 502,
+      statusCode: 500,
       headers,
       body: JSON.stringify({
-        error: temporary
-          ? "目前 Gemini 服務忙碌，請稍後再試。"
-          : "水質分析服務發生錯誤，請稍後再試。"
+        error: "後端查詢發生錯誤。",
+        diagnostic: String(
+          error?.message || error
+        ).slice(0, 300)
       })
     };
   }
