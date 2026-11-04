@@ -18,6 +18,47 @@ const responseSchema = {
   ]
 };
 
+// Gemini 暫時性錯誤自動重試
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function isTemporaryGeminiError(error) {
+  const status = Number(
+    error && (
+      error.status ||
+      error.code ||
+      (error.error && error.error.code)
+    )
+  );
+
+  const message = String(error && error.message || "").toLowerCase();
+
+  return [429, 500, 502, 503, 504].includes(status) ||
+    message.includes("high demand") ||
+    message.includes("temporarily unavailable") ||
+    message.includes("unavailable");
+}
+
+// 最多重試 2 次
+async function generateWithRetry(ai, request, maxRetries = 2) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await ai.models.generateContent(request);
+    } catch (error) {
+      if (attempt >= maxRetries || !isTemporaryGeminiError(error)) {
+        throw error;
+      }
+
+      const delayMs = 800 * (2 ** attempt);
+
+      console.warn(
+        `Gemini 暫時性錯誤，${delayMs}ms 後進行第 ${attempt + 1} 次重試。`
+      );
+
+      await sleep(delayMs);
+    }
+  }
+}
+
 exports.handler = async (event) => {
   const headers = {
     "Content-Type": "application/json; charset=utf-8",
@@ -33,6 +74,7 @@ exports.handler = async (event) => {
   }
 
   const apiKey = process.env.GEMINI_API_KEY;
+
   if (!apiKey) {
     return {
       statusCode: 500,
@@ -44,6 +86,7 @@ exports.handler = async (event) => {
   }
 
   let body;
+
   try {
     body = JSON.parse(event.body || "{}");
   } catch {
@@ -55,6 +98,7 @@ exports.handler = async (event) => {
   }
 
   const location = String(body.location || "").trim();
+
   if (!location || location.length > 120) {
     return {
       statusCode: 400,
@@ -67,6 +111,7 @@ exports.handler = async (event) => {
 
   try {
     const ai = new GoogleGenAI({ apiKey });
+
     const prompt = `你是台灣民生用水資訊助理。使用者查詢地點：${location}。
 請以繁體中文回傳符合指定 JSON schema 的內容。
 重要準則：
@@ -78,7 +123,7 @@ exports.handler = async (event) => {
 6. filter 僅提供依實際水質檢測與產品認證選擇濾材的中立建議，不得宣稱能治療或保證安全。
 7. 不得假稱已查詢政府即時資料或實驗室數據。`;
 
-    const result = await ai.models.generateContent({
+    const result = await generateWithRetry(ai, {
       model: "gemini-3.8-flash",
       contents: prompt,
       config: {
@@ -91,19 +136,28 @@ exports.handler = async (event) => {
 
     const raw = result.text || "";
     const data = JSON.parse(raw);
+
     return {
       statusCode: 200,
       headers,
-      body: JSON.stringify({ ...data, location: data.location || location })
+      body: JSON.stringify({
+        ...data,
+        location: data.location || location
+      })
     };
+
   } catch (error) {
     console.error("Gemini water query error:", error);
+
+    const temporary = isTemporaryGeminiError(error);
+
     return {
-      statusCode: 502,
+      statusCode: temporary ? 503 : 502,
       headers,
       body: JSON.stringify({
-        error: "Gemini 水質分析服務暫時無法使用。",
-        detail: error && error.message ? error.message : "未知錯誤"
+        error: temporary
+          ? "目前查詢人數較多，Gemini 服務暫時忙碌。系統已自動重試 2 次，請稍等 1 分鐘後再查詢。"
+          : "Gemini 水質分析服務發生錯誤，請稍後再試。"
       })
     };
   }
