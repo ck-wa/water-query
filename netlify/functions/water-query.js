@@ -354,8 +354,8 @@ exports.handler = async (event) => {
     const data = JSON.parse(raw);
 
     // 官方硬度資料優先於 AI 回答
-    const officialHardness =
-      await getOfficialHardness(location);
+   console.log("地址查詢：", location);
+   console.log("官方硬度查詢結果：", officialHardness);
 
     data.hardness_value = officialHardness.value;
 
